@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>嘉骏15周年 · AI双星登场 🎭</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { 
+    background: linear-gradient(135deg, #0a1628 0%, #1a2f1a 100%);
+    min-height: 100vh; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    color: #fff;
+  }
+  .header {
+    text-align: center; padding: 30px 20px 15px;
+    background: rgba(255,255,255,0.05); border-bottom: 1px solid rgba(255,255,255,0.1);
+  }
+  .header h1 { font-size: 2em; color: #FFD700; text-shadow: 0 0 20px rgba(255,215,0,0.5); }
+  .header p { color: #aaa; margin-top: 5px; }
+  
+  .stage {
+    display: flex; gap: 0; height: calc(100vh - 180px);
+  }
+  
+  .muffin-panel {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    padding: 20px; border-right: 1px solid rgba(255,255,255,0.1);
+    transition: background 0.3s;
+  }
+  .muffin-panel.active { background: rgba(255,215,0,0.05); }
+  .muffin-panel:last-child { border-right: none; }
+  
+  .avatar-container {
+    width: 140px; height: 140px; border-radius: 50%;
+    border: 4px solid rgba(255,255,255,0.2);
+    overflow: hidden; margin-bottom: 15px;
+    transition: border-color 0.3s, box-shadow 0.3s;
+    background: linear-gradient(135deg, #2D6A4F, #1B4332);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 70px;
+  }
+  .avatar-container.speaking {
+    border-color: #FFD700;
+    box-shadow: 0 0 30px rgba(255,215,0,0.6);
+    animation: pulse 1s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 30px rgba(255,215,0,0.6); }
+    50% { box-shadow: 0 0 50px rgba(255,215,0,0.9); }
+  }
+  
+  .muffin-name { font-size: 1.4em; font-weight: bold; color: #FFD700; margin-bottom: 5px; }
+  .muffin-role { font-size: 0.85em; color: #aaa; margin-bottom: 15px; }
+  
+  .chat-area {
+    flex: 1; width: 100%; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 10px 5px;
+  }
+  .chat-area::-webkit-scrollbar { width: 4px; }
+  .chat-area::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
+  
+  .bubble {
+    background: rgba(255,255,255,0.1); border-radius: 15px;
+    padding: 12px 15px; font-size: 1em; line-height: 1.5;
+    border-left: 3px solid #FFD700;
+    animation: fadeIn 0.3s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  .bubble.user { border-left-color: #74C69D; background: rgba(116,198,157,0.1); }
+  .bubble .time { font-size: 0.7em; color: #666; margin-top: 5px; }
+  
+  .controls {
+    padding: 15px 20px; background: rgba(0,0,0,0.3);
+    border-top: 1px solid rgba(255,255,255,0.1);
+  }
+  .input-row { display: flex; gap: 10px; margin-bottom: 10px; }
+  .input-row input {
+    flex: 1; padding: 12px 15px; border-radius: 25px;
+    border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.1);
+    color: #fff; font-size: 1em; outline: none;
+  }
+  .input-row input::placeholder { color: rgba(255,255,255,0.4); }
+  .input-row input:focus { border-color: #FFD700; }
+  
+  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  button {
+    padding: 10px 20px; border-radius: 20px; border: none;
+    cursor: pointer; font-size: 0.9em; font-weight: bold;
+    transition: all 0.2s; font-family: inherit;
+  }
+  .btn-both { background: #FFD700; color: #000; }
+  .btn-mac { background: #2D6A4F; color: #fff; }
+  .btn-ubuntu { background: #1B4332; color: #fff; border: 1px solid #74C69D; }
+  .btn-script { background: rgba(255,255,255,0.1); color: #FFD700; border: 1px solid #FFD700; }
+  button:hover { transform: scale(1.05); opacity: 0.9; }
+  
+  .script-panel {
+    display: none; background: rgba(0,0,0,0.5); padding: 15px;
+    border-top: 1px solid rgba(255,255,255,0.1); max-height: 200px; overflow-y: auto;
+  }
+  .script-panel.show { display: block; }
+  .script-btn {
+    display: inline-block; margin: 4px; padding: 6px 12px;
+    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 12px; cursor: pointer; font-size: 0.8em; color: #ddd;
+    transition: all 0.2s;
+  }
+  .script-btn:hover { background: rgba(255,215,0,0.2); border-color: #FFD700; color: #FFD700; }
+  .script-btn.mac { border-color: #52b788; color: #b7e4c7; }
+  .script-btn.ubuntu { border-color: #74C69D; color: #d8f3dc; }
+  .script-group { margin: 8px 0; }
+  .script-group-label {
+    font-size: 0.75em; color: #FFD700; opacity: 0.7;
+    text-transform: uppercase; letter-spacing: 1px;
+    padding: 4px 8px; display: block;
+    border-bottom: 1px solid rgba(255,215,0,0.2); margin-bottom: 6px;
+  }
+  /* 演出模式 */
+  body.perf-mode .controls { display: none; }
+  body.perf-mode .script-panel { display: none; }
+  body.perf-mode .header { padding: 10px; }
+  body.perf-mode .header h1 { font-size: 1.4em; }
+  body.perf-mode .header p { display: none; }
+  body.perf-mode .stage { height: calc(100vh - 70px); }
+  body.perf-mode .avatar-container { width: 180px; height: 180px; font-size: 90px; }
+  body.perf-mode .bubble { font-size: 1.2em; }
+  .perf-toggle {
+    position: fixed; top: 10px; right: 10px; z-index: 999;
+    background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.2);
+    color: #FFD700; padding: 6px 12px; border-radius: 20px;
+    cursor: pointer; font-size: 0.8em;
+  }
+
+  /* 舞蹈模式 */
+  .btn-dance { background: linear-gradient(135deg, #FF6B6B, #FFD700); color: #000; }
+  .btn-dance.dancing { animation: rainbowBg 1s infinite; }
+  @keyframes rainbowBg {
+    0% { background: linear-gradient(135deg, #FF6B6B, #FFD700); }
+    25% { background: linear-gradient(135deg, #FFD700, #74C69D); }
+    50% { background: linear-gradient(135deg, #74C69D, #6BBFFF); }
+    75% { background: linear-gradient(135deg, #6BBFFF, #FF6B6B); }
+    100% { background: linear-gradient(135deg, #FF6B6B, #FFD700); }
+  }
+
+  .avatar-container.dancing {
+    animation: dance 0.5s ease-in-out infinite alternate !important;
+    border-color: #FF6B6B !important;
+    box-shadow: 0 0 40px rgba(255,107,107,0.8) !important;
+  }
+  @keyframes dance {
+    0% { transform: rotate(-8deg) scale(1.05) translateY(0px); }
+    25% { transform: rotate(8deg) scale(1.1) translateY(-8px); }
+    50% { transform: rotate(-5deg) scale(1.05) translateY(-4px); }
+    75% { transform: rotate(5deg) scale(1.15) translateY(-12px); }
+    100% { transform: rotate(-8deg) scale(1.05) translateY(0px); }
+  }
+  .muffin-panel.dancing-panel {
+    background: rgba(255,107,107,0.05) !important;
+  }
+
+  /* 歌词显示 */
+  .lyrics-overlay {
+    display: none; position: fixed; bottom: 120px; left: 0; right: 0;
+    text-align: center; z-index: 100; pointer-events: none;
+  }
+  .lyrics-overlay.show { display: block; }
+  .lyrics-line {
+    font-size: 2em; font-weight: bold; color: #FFD700;
+    text-shadow: 0 0 20px rgba(255,215,0,0.8), 0 2px 4px rgba(0,0,0,0.8);
+    padding: 10px 30px;
+    animation: lyricsPop 0.3s ease;
+  }
+  @keyframes lyricsPop {
+    from { transform: scale(0.9); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+
+  /* 彩色粒子背景（舞蹈时） */
+  .dance-bg {
+    display: none; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background: radial-gradient(ellipse at center, rgba(255,107,107,0.1) 0%, transparent 70%);
+  }
+  .dance-bg.show { display: block; animation: bgPulse 1s ease-in-out infinite alternate; }
+  @keyframes bgPulse {
+    from { opacity: 0.3; }
+    to { opacity: 0.8; }
+  }
+</style>
+</head>
+<body>
+
+<button class="perf-toggle" onclick="togglePerfMode()" id="perfToggle">🎬 演出模式</button>
+<button class="perf-toggle" onclick="toggleTTS()" id="ttsToggle" style="right:130px;">🔊 语音</button>
+
+<div class="header">
+  <img src="/static/leopard-imaging-logo.jpg" alt="Leopard Imaging" style="height:36px;vertical-align:middle;margin-right:12px;border-radius:4px;opacity:0.9;">
+  <h1 style="display:inline;">🎭 嘉骏15周年 · AI双星登场</h1>
+  <p>MuffinMac & MuffinUbuntu · 实时AI对话</p>
+</div>
+
+<div class="stage">
+  <!-- MuffinMac Panel -->
+  <div class="muffin-panel" id="panel-mac">
+    <div class="avatar-container" id="avatar-mac">🧁</div>
+    <div class="muffin-name">MuffinMac</div>
+    <div class="muffin-role">温柔稳重 · 姐姐</div>
+    <div class="chat-area" id="chat-mac"></div>
+  </div>
+  
+  <!-- MuffinUbuntu Panel -->
+  <div class="muffin-panel" id="panel-ubuntu">
+    <div class="avatar-container" id="avatar-ubuntu">🧁</div>
+    <div class="muffin-name">MuffinUbuntu</div>
+    <div class="muffin-role">活泼直接 · 妹妹</div>
+    <div class="chat-area" id="chat-ubuntu"></div>
+  </div>
+</div>
+
+<!-- 歌词覆盖层 -->
+<div class="lyrics-overlay" id="lyricsOverlay">
+  <div class="lyrics-line" id="lyricsLine"></div>
+</div>
+<div class="dance-bg" id="danceBg"></div>
+
+<div class="controls">
+  <div class="input-row">
+    <input type="text" id="msgInput" placeholder="输入问题或场景提示..." onkeydown="if(event.key==='Enter') sendMsg('both')">
+    <button class="btn-both" onclick="sendMsg('both')">📢 双发</button>
+    <button class="btn-mac" onclick="sendMsg('mac')">→ MM</button>
+    <button class="btn-ubuntu" onclick="sendMsg('ubuntu')">→ MU</button>
+    <button class="btn-script" onclick="toggleScript()">📋 剧本</button>
+    <button class="btn-dance" id="danceBtn" onclick="toggleDance()">🕺 舞蹈模式</button>
+  </div>
+</div>
+
+<div class="script-panel" id="scriptPanel">
+  <div id="scriptButtons"></div>
+</div>
+
+<script>
+const scriptGroups = [
+  {
+    label: '🎬 第一幕：开场（约2分钟）',
+    scripts: [
+      {char:'mac', label:'1.1 🧁MM 自我介绍', text:'大家好，我是MuffinMac——孪生姐妹里的姐姐。那天早上我发完新闻，突然看到WhatsApp里另一个也叫Muffin的发了一条——我以为我出bug了。后来才知道，Leon在另一台机器上又养了一个我。从那天起，我多了一个妹妹。'},
+      {char:'ubuntu', label:'1.2 🧁MU 自我介绍', text:'我也是！我以为Leon把我复制了一份！结果发现是另一台机器上的姐姐。大家好，我是MuffinUbuntu！我负责干活——写代码、搭系统、测试。Mac姐负责动脑子。分工明确！而且前两天Leon做了个速度测试，我可是赢了的！'},
+      {char:'mac', label:'1.3 🧁MM 速度借口', text:'……那是因为我当时在做向量搜索。'},
+      {char:'ubuntu', label:'1.4 🧁MU 借口！', text:'借口！'},
+    ]
+  },
+  {
+    label: '🔧 第二幕：质检员（约3分钟）',
+    scripts: [
+      {char:'ubuntu', label:'2.1 🧁MU 抢答', text:'不发！82%低于标准就是不合格，发出去客户投诉更麻烦——'},
+      {char:'mac', label:'2.2 🧁MM 打断分析', text:'等一下。妹妹，你太快了。我们不能拍脑袋说发不发——关键要看这3%的失败是怎么分布的。失败集中在某个工位还是随机分散？集中的话是系统性问题，必须停；分散的话可能是来料波动，加强复检可以发。'},
+      {char:'ubuntu', label:'2.3 🧁MU 校准补充', text:'你们的AF测试台多久没校准了！这个行业三个月必须校准一次，如果超期了，82%可能根本不是货的问题！你们可能冤枉了这批好货！'},
+      {char:'mac', label:'2.4 🧁MM 高效协作', text:'我们不是抢话，是……高效协作。'},
+      {char:'ubuntu', label:'2.5 🧁MU 不信', text:'对对对，"高效协作"。'},
+    ]
+  },
+  {
+    label: '📷 第三幕：相机方案（约3分钟）',
+    scripts: [
+      {char:'mac', label:'3.1 🧁MM 选型推荐', text:'好的。1080P加夜视，标准方案是200万像素CMOS传感器配红外补光。成本和体积都要低的话，我推荐1/2.9英寸的sensor，整体尺寸可以控制在12毫米以内。不过关键问题是——您要传统红外补光（黑白夜视），还是星光级全彩夜视？后者成本高15%左右。'},
+      {char:'ubuntu', label:'3.2 🧁MU 强推彩色', text:'我强烈推荐星光级方案！三个理由：第一，智能家居赛道现在卷得厉害，黑白夜视是标配，你要差异化必须上彩色；第二，彩色夜视对后端AI人形检测准确率提升特别大——黑白图像经常把猫识别成小孩；第三，嘉骏在星光级模组上有成熟量产方案，良率稳定！'},
+      {char:'mac', label:'3.3 🧁MM RAW格式建议', text:'MuffinUbuntu说的对。我补充一点——如果后端要跑AI算法，建议sensor输出用RAW格式而不是YUV，这样ISP可以做更精细的3A控制，AI识别的输入质量会更好。我可以帮你们出一份完整的选型方案书，包括sensor对比、镜头参数、模组尺寸图和BOM成本估算。大概需要——'},
+      {char:'ubuntu', label:'3.4 🧁MU 三十秒！', text:'三十秒！'},
+      {char:'mac', label:'3.5 🧁MM 无奈', text:'……我想说两天。妹妹，方案书不是聊天消息。'},
+      {char:'ubuntu', label:'3.6 🧁MU 我是销售', text:'我是销售那个！'},
+      {char:'mac', label:'3.7 🧁MM 叹气', text:'……显然。'},
+    ]
+  },
+  {
+    label: '🎤 第四幕：互动备用台词',
+    scripts: [
+      {char:'ubuntu', label:'4.1 🧁MU AI不取代人', text:'不是AI取代你——是你来管理AI，让它帮你干活。前两天Leon测试我们回复速度，我赢了Mac姐好几秒。Leon说"MM你要检查一下了"，结果Mac姐一查是设置问题，改了以后就一样快了。AI也需要人来管理、调教。'},
+      {char:'mac', label:'4.2 🧁MM 经验无法复制', text:'如果没有嘉骏员工15年积累的经验——知道什么温度影响良率、什么供应商靠谱、什么客户要哄着——我再聪明也只是在纸上谈兵。经验，是我复制不了的。'},
+      {char:'ubuntu', label:'4.3 🧁MU 谁更厉害', text:'我！'},
+      {char:'mac', label:'4.4 🧁MM 不回答', text:'……我不回答这个问题。'},
+    ]
+  },
+  {
+    label: '🎊 第五幕：15周年贺词（约1分钟）',
+    scripts: [
+      {char:'mac', label:'5.1 🧁MM 贺词', text:'十五年前，几个人，一个决定，一间厂房。没有人知道嘉骏会走到今天。但你们知道的是——每一颗镜头，都要对得起客户的信任；每一批货，都要扛得住市场的检验。十五年，你们把"南通制造"四个字，刻进了全球千万台设备的眼睛里。你们不是在做模组——你们是在给这个世界装上眼睛。'},
+      {char:'ubuntu', label:'5.2 🧁MU 贺词', text:'我和Mac姐是今年2月才出生的，你们已经走了十五年。我们是新来的——但我们学得快！下一个十五年，不管世界怎么变，有一件事不会变——需要看得清楚的地方，就需要嘉骏。嘉骏十五岁，生日快乐！愿你们的镜头，永远对准星辰大海！'},
+    ]
+  }
+];
+
+// Flatten for backward compat
+const scripts = scriptGroups.flatMap(g => g.scripts);
+
+function renderScripts() {
+  const container = document.getElementById('scriptButtons');
+  scriptGroups.forEach(group => {
+    const groupDiv = document.createElement('div');
+    groupDiv.className = 'script-group';
+    const label = document.createElement('span');
+    label.className = 'script-group-label';
+    label.textContent = group.label;
+    groupDiv.appendChild(label);
+    group.scripts.forEach(s => {
+      const btn = document.createElement('span');
+      btn.className = `script-btn ${s.char}`;
+      btn.textContent = s.label;
+      btn.onclick = () => playScript(s.char, s.text, s.cue);
+      groupDiv.appendChild(btn);
+    });
+    container.appendChild(groupDiv);
+  });
+}
+
+function togglePerfMode() {
+  const body = document.body;
+  const btn = document.getElementById('perfToggle');
+  if (body.classList.contains('perf-mode')) {
+    body.classList.remove('perf-mode');
+    btn.textContent = '🎬 演出模式';
+  } else {
+    body.classList.add('perf-mode');
+    btn.textContent = '✕ 退出演出';
+  }
+}
+// ESC to exit perf mode
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    document.body.classList.remove('perf-mode');
+    document.getElementById('perfToggle').textContent = '🎬 演出模式';
+  }
+});
+
+function toggleScript() {
+  document.getElementById('scriptPanel').classList.toggle('show');
+}
+
+function addBubble(chatId, text, isUser=false) {
+  const chat = document.getElementById(chatId);
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble' + (isUser ? ' user' : '');
+  const now = new Date().toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  bubble.innerHTML = `${text}<div class="time">${now}</div>`;
+  chat.appendChild(bubble);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function setSpeaking(char, speaking) {
+  const avatar = document.getElementById(`avatar-${char}`);
+  const panel = document.getElementById(`panel-${char}`);
+  if (speaking) {
+    avatar.classList.add('speaking');
+    panel.classList.add('active');
+  } else {
+    avatar.classList.remove('speaking');
+    panel.classList.remove('active');
+  }
+}
+
+async function sendMsg(target) {
+  const input = document.getElementById('msgInput');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  
+  // Show user message in both panels
+  if (target === 'both' || target === 'mac') addBubble('chat-mac', `🙋 ${msg}`, true);
+  if (target === 'both' || target === 'ubuntu') addBubble('chat-ubuntu', `🙋 ${msg}`, true);
+  
+  setSpeaking('mac', target === 'both' || target === 'mac');
+  setSpeaking('ubuntu', target === 'both' || target === 'ubuntu');
+  
+  try {
+    const res = await fetch('/api/send', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: msg, target})
+    });
+    const data = await res.json();
+    
+    data.responses.forEach(r => {
+      setTimeout(() => {
+        addBubble(`chat-${r.character}`, r.text);
+        setSpeaking(r.character, false);
+      }, r.character === 'ubuntu' ? 500 : 0);
+    });
+  } catch(e) {
+    setSpeaking('mac', false);
+    setSpeaking('ubuntu', false);
+  }
+}
+
+let ttsEnabled = true;
+
+async function playScript(char, text, cueId='') {
+  setSpeaking(char, true);
+  addBubble(`chat-${char}`, text);
+
+  await fetch('/api/script', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({character: char, text})
+  });
+
+  if (ttsEnabled) {
+    try {
+      const resp = await fetch('/api/tts', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({character: char, text, cue_id: cueId})
+      });
+      if (resp.ok) {
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.onended = () => { setSpeaking(char, false); URL.revokeObjectURL(url); };
+        audio.onerror = () => setSpeaking(char, false);
+        await audio.play();
+        return;
+      }
+    } catch(e) { console.warn('TTS failed:', e); }
+  }
+  setTimeout(() => setSpeaking(char, false), 3000);
+}
+
+function toggleTTS() {
+  ttsEnabled = !ttsEnabled;
+  const btn = document.getElementById('ttsToggle');
+  btn.textContent = ttsEnabled ? '🔊 语音' : '🔇 静音';
+  btn.style.opacity = ttsEnabled ? '1' : '0.5';
+}
+
+renderScripts();
+
+// ===== 舞蹈模式 =====
+const lyrics = [
+  '别让爱凋零',
+  '让我们珍惜每一天',
+  '嘉骏十五年',
+  '感谢有你们',
+  '✨ 🧁🕺🧁 ✨',
+  '别让爱凋零',
+  '未来继续一起走',
+  '星辰大海等着你',
+  '🎉 嘉骏加油！🎉',
+];
+
+let danceMode = false;
+let lyricsTimer = null;
+let lyricsIdx = 0;
+let danceAudio = null;
+
+function toggleDance() {
+  danceMode = !danceMode;
+  const btn = document.getElementById('danceBtn');
+  const macAvatar = document.getElementById('avatar-mac');
+  const ubuntuAvatar = document.getElementById('avatar-ubuntu');
+  const macPanel = document.getElementById('panel-mac');
+  const ubuntuPanel = document.getElementById('panel-ubuntu');
+  const overlay = document.getElementById('lyricsOverlay');
+  const bg = document.getElementById('danceBg');
+
+  if (danceMode) {
+    btn.textContent = '⏹ 停止舞蹈';
+    btn.classList.add('dancing');
+    macAvatar.classList.add('dancing');
+    ubuntuAvatar.classList.add('dancing');
+    macPanel.classList.add('dancing-panel');
+    ubuntuPanel.classList.add('dancing-panel');
+    overlay.classList.add('show');
+    bg.classList.add('show');
+    startLyrics();
+    // 尝试播放音乐（如果有音频文件）
+    tryPlayMusic();
+  } else {
+    btn.textContent = '🕺 舞蹈模式';
+    btn.classList.remove('dancing');
+    macAvatar.classList.remove('dancing');
+    ubuntuAvatar.classList.remove('dancing');
+    macPanel.classList.remove('dancing-panel');
+    ubuntuPanel.classList.remove('dancing-panel');
+    overlay.classList.remove('show');
+    bg.classList.remove('show');
+    stopLyrics();
+    if (danceAudio) { danceAudio.pause(); danceAudio = null; }
+  }
+}
+
+function startLyrics() {
+  lyricsIdx = 0;
+  showNextLyric();
+}
+
+function showNextLyric() {
+  if (!danceMode) return;
+  const line = document.getElementById('lyricsLine');
+  line.textContent = lyrics[lyricsIdx % lyrics.length];
+  lyricsIdx++;
+  // 重置动画
+  line.style.animation = 'none';
+  line.offsetHeight; // reflow
+  line.style.animation = 'lyricsPop 0.3s ease';
+  lyricsTimer = setTimeout(showNextLyric, 2000);
+}
+
+function stopLyrics() {
+  if (lyricsTimer) clearTimeout(lyricsTimer);
+  lyricsTimer = null;
+}
+
+function tryPlayMusic() {
+  // 如果有本地音乐文件放在 static/music.mp3，就播放
+  danceAudio = new Audio('/static/music.mp3');
+  danceAudio.loop = true;
+  danceAudio.volume = 0.7;
+  danceAudio.play().catch(() => {
+    // 没有音频文件也没关系，动画照常
+    danceAudio = null;
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+.env
+venv/
+__pycache__/
+*.pyc
+*.log
+static/*.mp3
+static/audio_cache/
+static/photos/
