@@ -219,6 +219,22 @@
   <p>MuffinMac & MuffinUbuntu · 实时AI对话</p>
 </div>
 
+<!-- 声音解锁提示 -->
+<div id="unlockBanner" style="
+  position:fixed; top:0; left:0; right:0; z-index:9999;
+  background: linear-gradient(90deg, #e74c3c, #c0392b);
+  color:#fff; text-align:center; padding:12px;
+  font-size:16px; font-weight:bold; cursor:pointer;
+  animation: bannerPulse 1.5s infinite;
+" onclick="unlockAudio()">
+  🔊 点击此处启用声音 / Click here to enable audio
+</div>
+<style>
+@keyframes bannerPulse {
+  0%,100% { opacity:1; } 50% { opacity:0.8; }
+}
+</style>
+
 <div class="stage">
   <!-- MuffinMac Panel -->
   <div class="muffin-panel" id="panel-mac">
@@ -438,14 +454,16 @@ async function playScript(char, text, cueId='') {
         audio.onended = () => { setSpeaking(char, false); URL.revokeObjectURL(url); };
         audio.onerror = () => { setSpeaking(char, false); URL.revokeObjectURL(url); };
         try {
+          console.log(`[TTS] Playing audio for ${char}, blob size: ${blob.size}`);
           await audio.play();
+          console.log(`[TTS] Playing OK`);
         } catch(playErr) {
-          // autoplay blocked — show a hint
-          console.warn('Autoplay blocked:', playErr);
+          console.warn('[TTS] Autoplay blocked:', playErr);
           setSpeaking(char, false);
-          const hint = document.getElementById('micStatus');
-          if (hint) { hint.textContent = '⚠️ 点击页面任意处以启用声音'; hint.classList.add('active'); setTimeout(()=>{hint.textContent='';hint.classList.remove('active');}, 3000); }
           URL.revokeObjectURL(url);
+          // Show unlock banner again
+          const banner = document.getElementById('unlockBanner');
+          if (banner) { banner.style.display='block'; audioUnlocked=false; }
         }
         return;
       }
@@ -545,14 +563,27 @@ function stopMic() {
 
 // ===== TTS 修复：用户首次交互后解锁 audio context =====
 let audioUnlocked = false;
+let audioCtx = null;
+
 function unlockAudio() {
   if (audioUnlocked) return;
   audioUnlocked = true;
-  const silence = new Audio('data:audio/mp3;base64,SUQzBAAAAAABEVRYWFgAAAAtAAADY29tbWVudABCaWdTb3VuZCBUb29scyBmb3IgQWRvYmUgUHJlbWllcmUAAA==');
+  // Create and resume AudioContext to satisfy autoplay policy
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch(e) {}
+  // Play silent mp3
+  const silence = new Audio();
+  silence.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
   silence.play().catch(()=>{});
+  // Hide the unlock banner
+  const banner = document.getElementById('unlockBanner');
+  if (banner) banner.style.display = 'none';
+  console.log('Audio unlocked!');
 }
-document.addEventListener('click', unlockAudio, {once: true});
-document.addEventListener('keydown', unlockAudio, {once: true});
+document.addEventListener('click', unlockAudio);
+document.addEventListener('keydown', unlockAudio);
 
 renderScripts();
 
