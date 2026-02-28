@@ -260,24 +260,35 @@ def asr():
     audio_data = request.data  # raw bytes from MediaRecorder
     content_type = request.content_type or ''
 
-    # 判断格式
-    if 'webm' in content_type or 'ogg' in content_type:
-        fmt = 'ogg-opus'
+    # 根据浏览器上传格式推断并做多格式兜底重试
+    if 'pcm' in content_type:
+        fmt_candidates = ['pcm', 'wav']
     elif 'wav' in content_type:
-        fmt = 'wav'
+        fmt_candidates = ['wav', 'pcm']
+    elif 'ogg' in content_type:
+        fmt_candidates = ['ogg-opus', 'opus']
+    elif 'webm' in content_type:
+        # MediaRecorder 常见输出为 webm+opus，阿里接口不一定接受 webm 标识
+        # 先尝试 opus / ogg-opus 双兜底
+        fmt_candidates = ['opus', 'ogg-opus']
     else:
-        fmt = 'wav'  # 默认 wav（前端会发 wav）
+        fmt_candidates = ['wav', 'pcm', 'opus']
 
     if not audio_data:
         return jsonify({'error': 'no audio data'}), 400
 
-    try:
-        text = aliyun_asr(audio_data, fmt=fmt, sample_rate=16000)
-        app.logger.info(f"Aliyun ASR OK: {text[:50]}")
-        return jsonify({'text': text})
-    except Exception as e:
-        app.logger.error(f"Aliyun ASR error: {e}")
-        return jsonify({'error': str(e)}), 500
+    last_err = None
+    for fmt in fmt_candidates:
+        try:
+            text = aliyun_asr(audio_data, fmt=fmt, sample_rate=16000)
+            app.logger.info(f"Aliyun ASR OK ({fmt}): {text[:50]}")
+            return jsonify({'text': text})
+        except Exception as e:
+            last_err = e
+            app.logger.warning(f"Aliyun ASR failed ({fmt}): {e}")
+
+    app.logger.error(f"Aliyun ASR error (all formats failed): {last_err}")
+    return jsonify({'error': str(last_err)}), 500
 
 
 if __name__ == '__main__':

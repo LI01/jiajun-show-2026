@@ -606,11 +606,14 @@ async function startImprov() {
   }
 }
 
-// ===== 麦克风输入 (Aliyun NLS ASR — 绕开 Google，国内稳定可用) =====
-let mediaRecorder = null;
+// ===== 麦克风输入 (Web Audio API → PCM → Aliyun NLS ASR) =====
+// 录制原始 PCM 16-bit，Aliyun 100% 支持，无需 ffmpeg
 let isRecording = false;
-let micTarget = 'both'; // default send to both
-let audioChunks = [];
+let micTarget = 'both';
+let audioCtxRec = null;
+let scriptProcessor = null;
+let micStream = null;
+let pcmChunks = [];  // Float32Array chunks
 
 function toggleMic() {
   if (isRecording) {
@@ -625,48 +628,23 @@ async function startMic() {
   const status = document.getElementById('micStatus');
 
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
 
-    // 优先 wav，兼容性最好；回退 webm
-    const mimeType = MediaRecorder.isTypeSupported('audio/wav') ? 'audio/wav'
-                   : MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
-                   : 'audio/webm';
+    audioCtxRec = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    const source = audioCtxRec.createMediaStreamSource(micStream);
+    // ScriptProcessor: bufferSize=4096, 1 input channel, 1 output channel
+    scriptProcessor = audioCtxRec.createScriptProcessor(4096, 1, 1);
+    pcmChunks = [];
 
-    mediaRecorder = new MediaRecorder(stream, { mimeType });
-    audioChunks = [];
-
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) audioChunks.push(e.data);
+    scriptProcessor.onaudioprocess = (e) => {
+      if (!isRecording) return;
+      const f32 = e.inputBuffer.getChannelData(0);
+      pcmChunks.push(new Float32Array(f32));
     };
 
-    mediaRecorder.onstop = async () => {
-      stream.getTracks().forEach(t => t.stop());
-      const blob = new Blob(audioChunks, { type: mimeType });
-      status.textContent = '⏳ 识别中...';
+    source.connect(scriptProcessor);
+    scriptProcessor.connect(audioCtxRec.destination);
 
-      try {
-        const resp = await fetch('/api/asr', {
-          method: 'POST',
-          headers: { 'Content-Type': mimeType },
-          body: blob
-        });
-        const data = await resp.json();
-        if (data.text && data.text.trim()) {
-          document.getElementById('msgInput').value = data.text.trim();
-          status.textContent = '✅ 识别完成，发送中...';
-          setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 1500);
-          sendMsg(micTarget);
-        } else {
-          status.textContent = '❌ 未识别到语音，请重试';
-          setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 2000);
-        }
-      } catch(e) {
-        status.textContent = '❌ ASR 请求失败: ' + e.message;
-        setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 3000);
-      }
-    };
-
-    mediaRecorder.start();
     isRecording = true;
     btn.textContent = '⏹ 停止';
     btn.classList.add('recording');
@@ -686,12 +664,104 @@ async function startMic() {
 function stopMic() {
   isRecording = false;
   const btn = document.getElementById('micBtn');
+  const status = document.getElementById('micStatus');
   btn.textContent = '🎤 说话';
   btn.classList.remove('recording');
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
+
+  // 停止录音
+  if (scriptProcessor) { scriptProcessor.disconnect(); scriptProcessor = null; }
+  if (audioCtxRec) { audioCtxRec.close(); audioCtxRec = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+
+  if (pcmChunks.length === 0) {
+    status.textContent = '❌ 未录到音频';
+    status.classList.add('active');
+    setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 2000);
+    return;
   }
-  mediaRecorder = null;
+
+  // 合并 Float32 → Int16 PCM（优先发原始 PCM，避免某些 ASR 网关不接受 WAV 封装）
+  const pcmBlob = float32ChunksToPCM(pcmChunks);
+  pcmChunks = [];
+
+  status.textContent = '⏳ 识别中...';
+  status.classList.add('active');
+
+  fetch('/api/asr', {
+    method: 'POST',
+    headers: { 'Content-Type': 'audio/pcm;rate=16000' },
+    body: pcmBlob
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.text && data.text.trim()) {
+      document.getElementById('msgInput').value = data.text.trim();
+      status.textContent = '✅ 识别完成，发送中...';
+      setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 1500);
+      sendMsg(micTarget);
+    } else {
+      status.textContent = '❌ 未识别到语音，请重试';
+      setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 2500);
+    }
+  })
+  .catch(e => {
+    status.textContent = '❌ ASR 失败: ' + e.message;
+    setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 3000);
+  });
+}
+
+// Float32Array chunks → raw PCM Blob (Int16 LE)
+function float32ChunksToPCM(chunks) {
+  let total = 0;
+  chunks.forEach(c => total += c.length);
+  const merged = new Float32Array(total);
+  let offset = 0;
+  chunks.forEach(c => { merged.set(c, offset); offset += c.length; });
+
+  const int16 = new Int16Array(merged.length);
+  for (let i = 0; i < merged.length; i++) {
+    const s = Math.max(-1, Math.min(1, merged[i]));
+    int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return new Blob([int16.buffer], { type: 'audio/pcm' });
+}
+
+// Float32Array chunks → WAV Blob (PCM 16-bit, mono)
+function float32ChunksToWav(chunks, sampleRate) {
+  // 合并
+  let total = 0;
+  chunks.forEach(c => total += c.length);
+  const merged = new Float32Array(total);
+  let offset = 0;
+  chunks.forEach(c => { merged.set(c, offset); offset += c.length; });
+
+  // Float32 → Int16
+  const int16 = new Int16Array(merged.length);
+  for (let i = 0; i < merged.length; i++) {
+    const s = Math.max(-1, Math.min(1, merged[i]));
+    int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+
+  // WAV header
+  const dataLen = int16.buffer.byteLength;
+  const buf = new ArrayBuffer(44 + dataLen);
+  const view = new DataView(buf);
+  const writeStr = (o, s) => { for (let i=0;i<s.length;i++) view.setUint8(o+i, s.charCodeAt(i)); };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + dataLen, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);       // chunk size
+  view.setUint16(20, 1, true);        // PCM
+  view.setUint16(22, 1, true);        // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate
+  view.setUint16(32, 2, true);        // block align
+  view.setUint16(34, 16, true);       // bits per sample
+  writeStr(36, 'data');
+  view.setUint32(40, dataLen, true);
+  new Int16Array(buf, 44).set(int16);
+  return new Blob([buf], { type: 'audio/wav' });
 }
 
 // ===== TTS 修复：用户首次交互后解锁 audio context =====
