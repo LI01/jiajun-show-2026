@@ -145,6 +145,21 @@
     margin-top: 4px; min-height: 16px;
   }
   .mic-status.active { color: #e74c3c; }
+  .btn-improv {
+    background: linear-gradient(135deg, #8e44ad, #9b59b6);
+    color: #fff; border: none; padding: 10px 16px;
+    border-radius: 20px; cursor: pointer; font-size: 14px;
+    transition: all 0.2s; font-weight: bold;
+  }
+  .btn-improv:hover { transform: scale(1.05); }
+  .btn-improv.running {
+    background: linear-gradient(135deg, #6c3483, #8e44ad);
+    animation: improvPulse 1s infinite;
+  }
+  @keyframes improvPulse {
+    0%,100% { box-shadow: 0 0 8px rgba(142,68,173,0.6); }
+    50% { box-shadow: 0 0 20px rgba(142,68,173,0.9); }
+  }
   .perf-toggle {
     position: fixed; top: 10px; right: 10px; z-index: 999;
     background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.2);
@@ -267,6 +282,7 @@
     <button class="btn-mac" onclick="sendMsg('mac')">→ MM</button>
     <button class="btn-ubuntu" onclick="sendMsg('ubuntu')">→ MU</button>
     <button class="btn-script" onclick="toggleScript()">📋 剧本</button>
+    <button class="btn-improv" id="improvBtn" onclick="startImprov()">🎲 即兴对话</button>
     <button class="btn-dance" id="danceBtn" onclick="toggleDance()">🕺 舞蹈模式</button>
   </div>
   <div class="mic-status" id="micStatus"></div>
@@ -513,6 +529,81 @@ function toggleTTS() {
   const btn = document.getElementById('ttsToggle');
   btn.textContent = ttsEnabled ? '🔊 语音' : '🔇 静音';
   btn.style.opacity = ttsEnabled ? '1' : '0.5';
+}
+
+// ===== 即兴对话模式 (60秒, 6轮) =====
+let improvRunning = false;
+
+const improvTopics = [
+  '嘉骏15周年，AI和人类怎么配合？',
+  '客户突然说要改需求，怎么办？',
+  '如果嘉骏再做15年，会变成什么样？',
+  '质量和速度，你们各站哪边？',
+  '嘉骏员工最厉害的地方是什么？',
+];
+
+async function startImprov() {
+  if (improvRunning) {
+    improvRunning = false;
+    document.getElementById('improvBtn').textContent = '🎲 即兴对话';
+    document.getElementById('improvBtn').classList.remove('running');
+    return;
+  }
+
+  improvRunning = true;
+  const btn = document.getElementById('improvBtn');
+  btn.textContent = '⏹ 停止即兴';
+  btn.classList.add('running');
+
+  // Pick random topic
+  const topic = improvTopics[Math.floor(Math.random() * improvTopics.length)];
+  addBubble('chat-mac', `🎲 即兴话题：${topic}`, true);
+  addBubble('chat-ubuntu', `🎲 即兴话题：${topic}`, true);
+
+  // Conversation history for context
+  let history = `主题：${topic}\n这是MuffinMac和MuffinUbuntu的即兴对话，自然风趣，每句话30字以内，不重复，像真人聊天。\n`;
+  let turn = 0;
+  const maxTurns = 6;
+  let currentChar = 'ubuntu'; // MU starts
+
+  while (improvRunning && turn < maxTurns) {
+    const otherChar = currentChar === 'mac' ? 'ubuntu' : 'mac';
+    const selfName = currentChar === 'mac' ? 'MuffinMac' : 'MuffinUbuntu';
+    const otherName = currentChar === 'mac' ? 'MuffinUbuntu' : 'MuffinMac';
+
+    const prompt = `${history}\n现在轮到${selfName}说一句话回应${otherName}，简短自然俏皮，不超过40字：`;
+
+    try {
+      const res = await fetch('/api/send', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({message: prompt, target: currentChar})
+      });
+      const data = await res.json();
+      const reply = data.responses[0]?.text || '';
+
+      if (reply && improvRunning) {
+        addBubble(`chat-${currentChar}`, reply);
+        history += `${selfName}：${reply}\n`;
+        await speakTTS(currentChar, reply);
+      }
+    } catch(e) {
+      console.warn('Improv error:', e);
+      break;
+    }
+
+    currentChar = otherChar;
+    turn++;
+    if (improvRunning && turn < maxTurns) await new Promise(r => setTimeout(r, 300));
+  }
+
+  improvRunning = false;
+  btn.textContent = '🎲 即兴对话';
+  btn.classList.remove('running');
+  if (turn >= maxTurns) {
+    addBubble('chat-mac', '🎭 即兴结束！', false);
+    addBubble('chat-ubuntu', '🎭 即兴结束！', false);
+  }
 }
 
 // ===== 麦克风输入 =====
