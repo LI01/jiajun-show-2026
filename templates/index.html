@@ -606,17 +606,13 @@ async function startImprov() {
   }
 }
 
-// ===== 麦克风输入 =====
-let recognition = null;
+// ===== 麦克风输入 (Aliyun NLS ASR — 绕开 Google，国内稳定可用) =====
+let mediaRecorder = null;
 let isRecording = false;
 let micTarget = 'both'; // default send to both
+let audioChunks = [];
 
 function toggleMic() {
-  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-    alert('您的浏览器不支持语音识别，请使用 Chrome 浏览器');
-    return;
-  }
-
   if (isRecording) {
     stopMic();
   } else {
@@ -624,68 +620,78 @@ function toggleMic() {
   }
 }
 
-function startMic() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  recognition = new SpeechRecognition();
-  recognition.lang = 'zh-CN';
-  recognition.continuous = false;
-  recognition.interimResults = true;
-
+async function startMic() {
   const btn = document.getElementById('micBtn');
   const status = document.getElementById('micStatus');
 
-  recognition.onstart = () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    // 优先 wav，兼容性最好；回退 webm
+    const mimeType = MediaRecorder.isTypeSupported('audio/wav') ? 'audio/wav'
+                   : MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+                   : 'audio/webm';
+
+    mediaRecorder = new MediaRecorder(stream, { mimeType });
+    audioChunks = [];
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(audioChunks, { type: mimeType });
+      status.textContent = '⏳ 识别中...';
+
+      try {
+        const resp = await fetch('/api/asr', {
+          method: 'POST',
+          headers: { 'Content-Type': mimeType },
+          body: blob
+        });
+        const data = await resp.json();
+        if (data.text && data.text.trim()) {
+          document.getElementById('msgInput').value = data.text.trim();
+          status.textContent = '✅ 识别完成，发送中...';
+          setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 1500);
+          sendMsg(micTarget);
+        } else {
+          status.textContent = '❌ 未识别到语音，请重试';
+          setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 2000);
+        }
+      } catch(e) {
+        status.textContent = '❌ ASR 请求失败: ' + e.message;
+        setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 3000);
+      }
+    };
+
+    mediaRecorder.start();
     isRecording = true;
     btn.textContent = '⏹ 停止';
     btn.classList.add('recording');
-    status.textContent = '🎤 正在聆听...';
+    status.textContent = '🎤 正在录音...（说完点停止）';
     status.classList.add('active');
-  };
 
-  recognition.onresult = (event) => {
-    let interim = '';
-    let final = '';
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      if (event.results[i].isFinal) {
-        final += event.results[i][0].transcript;
-      } else {
-        interim += event.results[i][0].transcript;
-      }
-    }
-    // Show interim in input box
-    document.getElementById('msgInput').value = final || interim;
-    if (final) {
-      status.textContent = '✅ 识别完成，发送中...';
-      stopMic();
-      sendMsg(micTarget);
-    }
-  };
-
-  recognition.onerror = (event) => {
-    status.textContent = '❌ 识别失败: ' + event.error;
-    status.classList.remove('active');
-    stopMic();
-  };
-
-  recognition.onend = () => {
-    if (isRecording) stopMic();
-  };
-
-  recognition.start();
+  } catch(e) {
+    const msg = e.name === 'NotAllowedError' ? '麦克风权限被拒绝，请在浏览器地址栏允许麦克风'
+              : e.name === 'NotFoundError' ? '未检测到麦克风设备'
+              : '麦克风启动失败: ' + e.message;
+    status.textContent = '❌ ' + msg;
+    status.classList.add('active');
+    setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 4000);
+  }
 }
 
 function stopMic() {
   isRecording = false;
   const btn = document.getElementById('micBtn');
-  const status = document.getElementById('micStatus');
   btn.textContent = '🎤 说话';
   btn.classList.remove('recording');
-  status.classList.remove('active');
-  if (recognition) {
-    try { recognition.stop(); } catch(e) {}
-    recognition = null;
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
   }
-  setTimeout(() => { if (!isRecording) status.textContent = ''; }, 2000);
+  mediaRecorder = null;
 }
 
 // ===== TTS 修复：用户首次交互后解锁 audio context =====

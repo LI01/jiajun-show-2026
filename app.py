@@ -20,6 +20,12 @@ try:
 except ImportError:
     ALIYUN_AVAILABLE = False
 
+try:
+    from asr_aliyun import recognize as aliyun_asr
+    ASR_AVAILABLE = True
+except ImportError:
+    ASR_AVAILABLE = False
+
 app = Flask(__name__)
 
 # Config
@@ -245,5 +251,34 @@ def tts():
         return jsonify({'error': f'TTS failed: {e}'}), 500
 
 
+@app.route('/api/asr', methods=['POST'])
+def asr():
+    """Server-side ASR — Aliyun NLS 一句话识别，绕开 Google Speech API 墙"""
+    if not ASR_AVAILABLE:
+        return jsonify({'error': 'ASR not available'}), 503
+
+    audio_data = request.data  # raw bytes from MediaRecorder
+    content_type = request.content_type or ''
+
+    # 判断格式
+    if 'webm' in content_type or 'ogg' in content_type:
+        fmt = 'ogg-opus'
+    elif 'wav' in content_type:
+        fmt = 'wav'
+    else:
+        fmt = 'wav'  # 默认 wav（前端会发 wav）
+
+    if not audio_data:
+        return jsonify({'error': 'no audio data'}), 400
+
+    try:
+        text = aliyun_asr(audio_data, fmt=fmt, sample_rate=16000)
+        app.logger.info(f"Aliyun ASR OK: {text[:50]}")
+        return jsonify({'text': text})
+    except Exception as e:
+        app.logger.error(f"Aliyun ASR error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
-    app.run(debug=True, port=5001, host='0.0.0.0')
+    app.run(debug=False, port=5001, host='0.0.0.0')
