@@ -416,12 +416,11 @@ async function sendMsg(target) {
     });
     const data = await res.json();
     
-    data.responses.forEach(r => {
-      setTimeout(() => {
-        addBubble(`chat-${r.character}`, r.text);
-        setSpeaking(r.character, false);
-      }, r.character === 'ubuntu' ? 500 : 0);
-    });
+    // Show text + play TTS sequentially
+    for (const r of data.responses) {
+      addBubble(`chat-${r.character}`, r.text);
+      await speakTTS(r.character, r.text);
+    }
   } catch(e) {
     setSpeaking('mac', false);
     setSpeaking('ubuntu', false);
@@ -429,6 +428,38 @@ async function sendMsg(target) {
 }
 
 let ttsEnabled = true;
+
+// TTS-only (no addBubble, no /api/script) — used for AI replies
+async function speakTTS(char, text) {
+  if (!ttsEnabled) { setSpeaking(char, false); return; }
+  setSpeaking(char, true);
+  try {
+    const resp = await fetch('/api/tts', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({character: char, text})
+    });
+    if (resp.ok) {
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      await new Promise((resolve) => {
+        const audio = new Audio(url);
+        audio.onended = () => { setSpeaking(char, false); URL.revokeObjectURL(url); resolve(); };
+        audio.onerror = () => { setSpeaking(char, false); URL.revokeObjectURL(url); resolve(); };
+        audio.play().catch(e => {
+          console.warn('[TTS] Autoplay blocked:', e);
+          setSpeaking(char, false);
+          URL.revokeObjectURL(url);
+          const banner = document.getElementById('unlockBanner');
+          if (banner) { banner.style.display='block'; audioUnlocked=false; }
+          resolve();
+        });
+      });
+      return;
+    }
+  } catch(e) { console.warn('speakTTS error:', e); }
+  setSpeaking(char, false);
+}
 
 async function playScript(char, text, cueId='') {
   setSpeaking(char, true);
