@@ -52,47 +52,79 @@ MUFFINS = {
 history_mac = []
 history_ubuntu = []
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyDiPJDdXHLX5-epBiBoI7jv50PSrU9daVg")
+# AI backend — OpenAI-compatible (Aliyun Bailian / OpenRouter / etc.)
+# Priority: OPENAI_BASE → fallback Gemini
+OPENAI_BASE = os.environ.get("OPENAI_BASE", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "qwen-plus")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 def get_ai_response(character_key, user_message):
-    """Get response from Gemini 2.0 Flash"""
+    """Get response via OpenAI-compatible API (Aliyun/OpenRouter) or fallback to Gemini"""
     char = MUFFINS[character_key]
-
-    # Build conversation history for context
     history = history_mac if character_key == "mac" else history_ubuntu
-    contents = []
-    for turn in history[-6:]:  # keep last 3 exchanges
-        contents.append({"role": turn["role"], "parts": [{"text": turn["text"]}]})
-    contents.append({"role": "user", "parts": [{"text": user_message}]})
 
-    payload = {
-        "system_instruction": {"parts": [{"text": char["system"]}]},
-        "contents": contents,
-        "generationConfig": {"maxOutputTokens": 200, "temperature": 0.8}
-    }
+    # ── OpenAI-compatible path (Aliyun Bailian / OpenRouter) ──
+    if OPENAI_BASE and OPENAI_API_KEY:
+        messages = [{"role": "system", "content": char["system"]}]
+        for turn in history[-8:]:
+            role = "assistant" if turn["role"] == "model" else turn["role"]
+            messages.append({"role": role, "content": turn["text"]})
+        messages.append({"role": "user", "content": user_message})
 
-    try:
-        resp = requests.post(
-            f"{GEMINI_URL}?key={GEMINI_API_KEY}",
-            json=payload,
-            timeout=15
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        try:
+            resp = requests.post(
+                f"{OPENAI_BASE.rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": OPENAI_MODEL,
+                    "messages": messages,
+                    "max_tokens": 200,
+                    "temperature": 0.85
+                },
+                timeout=20
+            )
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"].strip()
+            history.append({"role": "user", "text": user_message})
+            history.append({"role": "model", "text": text})
+            if len(history) > 20:
+                history[:] = history[-20:]
+            return text
+        except Exception as e:
+            app.logger.warning(f"OpenAI-compatible API error: {e}, falling back to Gemini")
 
-        # Update history
-        history.append({"role": "user", "text": user_message})
-        history.append({"role": "model", "text": text})
-        # Trim history to last 20 turns
-        if len(history) > 20:
-            history[:] = history[-20:]
+    # ── Gemini fallback ──
+    if GEMINI_API_KEY:
+        contents = []
+        for turn in history[-6:]:
+            contents.append({"role": turn["role"], "parts": [{"text": turn["text"]}]})
+        contents.append({"role": "user", "parts": [{"text": user_message}]})
+        payload = {
+            "system_instruction": {"parts": [{"text": char["system"]}]},
+            "contents": contents,
+            "generationConfig": {"maxOutputTokens": 200, "temperature": 0.85}
+        }
+        try:
+            resp = requests.post(
+                f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+                json=payload, timeout=15
+            )
+            resp.raise_for_status()
+            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            history.append({"role": "user", "text": user_message})
+            history.append({"role": "model", "text": text})
+            if len(history) > 20:
+                history[:] = history[-20:]
+            return text
+        except Exception as e:
+            app.logger.error(f"Gemini API error: {e}")
 
-        return text
-    except Exception as e:
-        app.logger.error(f"Gemini API error: {e}")
-        return f"[{char['name']}] 抱歉，AI连接出了点问题：{str(e)[:60]}"
+    return f"[{char['name']}] 抱歉，AI暂时无法连接，请检查 .env 配置。"
 
 @app.route('/')
 def index():
