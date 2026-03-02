@@ -1,0 +1,26 @@
+{
+  "_comment": "阿里云 NLS 热词列表，用于提升实时语音识别权重。直接编辑此文件即可添加/删除热词。",
+  "hotwords": [
+    "嘉骏",
+    "Leopard Imaging",
+    "Leopard",
+    "MuffinMac",
+    "MuffinUbuntu",
+    "AglaiaSense",
+    "GS500",
+    "MS500",
+    "IMX501",
+    "模组",
+    "良率",
+    "sensor",
+    "CMOS",
+    "Leon",
+    "Sony",
+    "星光级",
+    "夜视",
+    "阿里云",
+    "OpenAI",
+    "一句话识别",
+    "实时识别"
+  ]
+}

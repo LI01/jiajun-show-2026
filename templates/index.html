@@ -221,6 +221,38 @@
     from { opacity: 0.3; }
     to { opacity: 0.8; }
   }
+
+  /* ─── 实时字幕区域 ─────────────────────────────────────────────────────── */
+  .subtitle-bar {
+    padding: 8px 24px;
+    min-height: 44px;
+    text-align: center;
+    background: rgba(0, 0, 0, 0.35);
+    border-top: 1px solid rgba(255,255,255,0.06);
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.3s;
+  }
+  .subtitle-bar.active { background: rgba(0,0,0,0.5); }
+  #subtitleText {
+    font-size: 1.15em;
+    line-height: 1.4;
+    letter-spacing: 0.03em;
+    color: #555;            /* 默认空状态：几乎不可见 */
+    transition: color 0.25s;
+    max-width: 900px;
+  }
+  #subtitleText.interim { color: #888; }  /* 中间结果：灰色 */
+  #subtitleText.final   { color: #fff; }  /* 最终结果：白色 */
+  #subtitleText.llm     {
+    color: #FFD700;
+    animation: llmFlash 0.6s ease forwards;
+  }
+  @keyframes llmFlash {
+    0%   { color: #fff; text-shadow: 0 0 0 transparent; }
+    30%  { color: #FFD700; text-shadow: 0 0 16px rgba(255,215,0,0.8); }
+    70%  { color: #FFD700; text-shadow: 0 0 8px rgba(255,215,0,0.5); }
+    100% { color: #FFD700; text-shadow: none; }
+  }
 </style>
 </head>
 <body>
@@ -274,6 +306,11 @@
 </div>
 <div class="dance-bg" id="danceBg"></div>
 
+<!-- 实时字幕区域（麦克风录音时显示中间/最终结果）-->
+<div class="subtitle-bar" id="subtitleBar">
+  <span id="subtitleText" title="实时语音识别字幕"></span>
+</div>
+
 <div class="controls">
   <div class="input-row">
     <input type="text" id="msgInput" placeholder="输入问题或场景提示..." onkeydown="if(event.key==='Enter') sendMsg('both')">
@@ -291,6 +328,9 @@
 <div class="script-panel" id="scriptPanel">
   <div id="scriptButtons"></div>
 </div>
+
+<!-- Socket.IO 客户端（由 Flask-SocketIO 提供，无需外部 CDN）-->
+<script src="/socket.io/socket.io.js"></script>
 
 <script>
 const scriptGroups = [
@@ -606,73 +646,197 @@ async function startImprov() {
   }
 }
 
-// ===== 麦克风输入 (Web Audio API → PCM → Aliyun NLS ASR) =====
-// 录制原始 PCM 16-bit，Aliyun 100% 支持，无需 ffmpeg
-let isRecording = false;
-let micTarget = 'both';
-let audioCtxRec = null;
-let scriptProcessor = null;
-let micStream = null;
-let pcmChunks = [];  // Float32Array chunks
+// ===== 实时麦克风输入 (Web Audio API → PCM → SocketIO → 阿里云 NLS 实时 ASR) =====
+// 录制 PCM 16-bit，每 ~100ms 通过 SocketIO 发一帧给服务端，服务端转发给 NLS，
+// 收到 interim/final/llm 结果实时更新字幕。
+// 旧的一句话 ASR (/api/asr) 保留作为 fallback。
 
+let isRecording  = false;
+let micTarget    = 'both';
+let audioCtxRec  = null;
+let scriptProc   = null;
+let micStream    = null;
+let pcmChunks    = [];   // fallback 用：存储所有 chunks
+let useRealtime  = true; // 优先走 SocketIO 实时；失败则 fallback 到一句话 ASR
+
+// ─── Socket.IO 初始化 ────────────────────────────────────────────────────────
+// 使用 Socket.IO CDN（通过 Flask-SocketIO 的 /socket.io/socket.io.js）
+let socket = null;
+let socketReady = false;
+
+function initSocket() {
+  if (socket) return;
+  try {
+    socket = io({ transports: ['websocket', 'polling'] });
+
+    socket.on('connect', () => {
+      socketReady = true;
+      console.log('[Socket.IO] 已连接:', socket.id);
+    });
+
+    socket.on('disconnect', () => {
+      socketReady = false;
+      console.log('[Socket.IO] 已断开');
+    });
+
+    // ASR 就绪（服务端 NLS 连接成功）
+    socket.on('asr_ready', () => {
+      setSubtitle('🎤 识别中...', 'interim');
+      console.log('[ASR] 实时识别就绪');
+    });
+
+    // 中间结果（灰色字幕，实时更新）
+    socket.on('asr_interim', (data) => {
+      setSubtitle(data.text, 'interim');
+    });
+
+    // 最终结果（白色字幕）
+    socket.on('asr_final', (data) => {
+      setSubtitle(data.text, 'final');
+      // 把文本填入输入框（但不自动发送，等 LLM 修正或用户手动发送）
+      if (data.text) {
+        document.getElementById('msgInput').value = data.text;
+      }
+    });
+
+    // LLM 修正结果（金色闪烁）
+    socket.on('asr_llm', (data) => {
+      setSubtitle(data.text, 'llm');
+      if (data.text) {
+        document.getElementById('msgInput').value = data.text;
+      }
+      // 自动发送
+      const status = document.getElementById('micStatus');
+      status.textContent = '✅ 识别完成，发送中...';
+      setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 1500);
+      sendMsg(micTarget);
+    });
+
+    // ASR 停止确认
+    socket.on('asr_stopped', () => {
+      console.log('[ASR] 实时识别已停止');
+    });
+
+    // 错误处理
+    socket.on('asr_error', (data) => {
+      console.warn('[ASR] 错误:', data.msg);
+      const status = document.getElementById('micStatus');
+      status.textContent = '⚠️ ' + (data.msg || 'ASR 错误');
+      setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 3000);
+    });
+
+  } catch(e) {
+    console.warn('[Socket.IO] 初始化失败，将使用 fallback ASR:', e);
+    socketReady = false;
+  }
+}
+
+// ─── 字幕控制 ────────────────────────────────────────────────────────────────
+function setSubtitle(text, state) {
+  const el   = document.getElementById('subtitleText');
+  const bar  = document.getElementById('subtitleBar');
+  el.textContent = text || '';
+  el.className   = text ? state : '';
+  bar.classList.toggle('active', !!text && (state === 'interim' || state === 'final' || state === 'llm'));
+}
+
+function clearSubtitle() {
+  setSubtitle('', '');
+}
+
+// ─── 主控：切换录音 ──────────────────────────────────────────────────────────
 function toggleMic() {
   if (isRecording) {
     stopMic();
   } else {
+    // 确保 Socket.IO 已初始化
+    initSocket();
     startMic();
   }
 }
 
+// ─── 开始录音 ────────────────────────────────────────────────────────────────
 async function startMic() {
-  const btn = document.getElementById('micBtn');
+  const btn    = document.getElementById('micBtn');
   const status = document.getElementById('micStatus');
 
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true }
+    });
 
     audioCtxRec = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
     const source = audioCtxRec.createMediaStreamSource(micStream);
-    // ScriptProcessor: bufferSize=4096, 1 input channel, 1 output channel
-    scriptProcessor = audioCtxRec.createScriptProcessor(4096, 1, 1);
-    pcmChunks = [];
 
-    scriptProcessor.onaudioprocess = (e) => {
+    // bufferSize=1600 ≈ 100ms @16kHz — 控制每帧延迟
+    scriptProc = audioCtxRec.createScriptProcessor(1600, 1, 1);
+    pcmChunks  = [];
+
+    scriptProc.onaudioprocess = (e) => {
       if (!isRecording) return;
       const f32 = e.inputBuffer.getChannelData(0);
+
+      // 总是收集 fallback chunks
       pcmChunks.push(new Float32Array(f32));
+
+      // 实时流：转换为 Int16 ArrayBuffer 并通过 SocketIO 发送
+      if (socketReady && socket && socket.connected) {
+        const int16 = float32ToInt16(f32);
+        socket.emit('asr_audio', int16.buffer);
+      }
     };
 
-    source.connect(scriptProcessor);
-    scriptProcessor.connect(audioCtxRec.destination);
+    source.connect(scriptProc);
+    scriptProc.connect(audioCtxRec.destination);
 
     isRecording = true;
     btn.textContent = '⏹ 停止';
     btn.classList.add('recording');
-    status.textContent = '🎤 正在录音...（说完点停止）';
+    status.textContent = '⏳ 连接识别服务...';
     status.classList.add('active');
+    clearSubtitle();
+
+    // 通知服务端启动 NLS 连接
+    if (socketReady && socket && socket.connected) {
+      socket.emit('asr_start');
+    } else {
+      // fallback 模式：仅采集，停止时一起发
+      status.textContent = '🎤 录音中（一句话模式）...';
+    }
 
   } catch(e) {
     const msg = e.name === 'NotAllowedError' ? '麦克风权限被拒绝，请在浏览器地址栏允许麦克风'
-              : e.name === 'NotFoundError' ? '未检测到麦克风设备'
-              : '麦克风启动失败: ' + e.message;
+              : e.name === 'NotFoundError'   ? '未检测到麦克风设备'
+              :                               '麦克风启动失败: ' + e.message;
     status.textContent = '❌ ' + msg;
     status.classList.add('active');
     setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 4000);
   }
 }
 
+// ─── 停止录音 ────────────────────────────────────────────────────────────────
 function stopMic() {
   isRecording = false;
-  const btn = document.getElementById('micBtn');
+  const btn    = document.getElementById('micBtn');
   const status = document.getElementById('micStatus');
   btn.textContent = '🎤 说话';
   btn.classList.remove('recording');
 
-  // 停止录音
-  if (scriptProcessor) { scriptProcessor.disconnect(); scriptProcessor = null; }
-  if (audioCtxRec) { audioCtxRec.close(); audioCtxRec = null; }
-  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  // 停止音频采集
+  if (scriptProc)  { scriptProc.disconnect();   scriptProc  = null; }
+  if (audioCtxRec) { audioCtxRec.close();        audioCtxRec = null; }
+  if (micStream)   { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
 
+  // ── 实时流模式：通知服务端停止 NLS ──────────────────────────────────────
+  if (socketReady && socket && socket.connected) {
+    socket.emit('asr_stop');
+    status.textContent = '⏳ 等待最终结果...';
+    status.classList.add('active');
+    // asr_llm 事件回调会自动发送，或等 asr_final 后用户手动发
+    return;
+  }
+
+  // ── Fallback：一句话 ASR（旧逻辑保留）────────────────────────────────────
   if (pcmChunks.length === 0) {
     status.textContent = '❌ 未录到音频';
     status.classList.add('active');
@@ -680,22 +844,21 @@ function stopMic() {
     return;
   }
 
-  // 合并 Float32 → Int16 PCM（优先发原始 PCM，避免某些 ASR 网关不接受 WAV 封装）
   const pcmBlob = float32ChunksToPCM(pcmChunks);
   pcmChunks = [];
-
-  status.textContent = '⏳ 识别中...';
+  status.textContent = '⏳ 识别中（fallback）...';
   status.classList.add('active');
 
   fetch('/api/asr', {
-    method: 'POST',
+    method:  'POST',
     headers: { 'Content-Type': 'audio/pcm;rate=16000' },
-    body: pcmBlob
+    body:    pcmBlob
   })
   .then(r => r.json())
   .then(data => {
     if (data.text && data.text.trim()) {
       document.getElementById('msgInput').value = data.text.trim();
+      setSubtitle(data.text.trim(), 'final');
       status.textContent = '✅ 识别完成，发送中...';
       setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 1500);
       sendMsg(micTarget);
@@ -704,10 +867,20 @@ function stopMic() {
       setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 2500);
     }
   })
-  .catch(e => {
-    status.textContent = '❌ ASR 失败: ' + e.message;
+  .catch(err => {
+    status.textContent = '❌ ASR 失败: ' + err.message;
     setTimeout(() => { status.textContent = ''; status.classList.remove('active'); }, 3000);
   });
+}
+
+// ─── 辅助：Float32 → Int16 ──────────────────────────────────────────────────
+function float32ToInt16(f32) {
+  const int16 = new Int16Array(f32.length);
+  for (let i = 0; i < f32.length; i++) {
+    const s = Math.max(-1, Math.min(1, f32[i]));
+    int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return int16;
 }
 
 // Float32Array chunks → raw PCM Blob (Int16 LE)
@@ -789,6 +962,9 @@ document.addEventListener('click', unlockAudio);
 document.addEventListener('keydown', unlockAudio);
 
 renderScripts();
+
+// 页面加载后自动初始化 Socket.IO 连接（提前建连，减少首次录音延迟）
+document.addEventListener('DOMContentLoaded', initSocket);
 
 // ===== 舞蹈模式 =====
 const lyrics = [

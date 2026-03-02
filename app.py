@@ -2,12 +2,16 @@
 """
 嘉骏15周年 AI双星登场 — 演示程序
 MuffinMac (晓晓) + MuffinUbuntu (晓伊)
+
+v2: 新增实时语音识别（阿里云 NLS WebSocket）+ Flask-SocketIO 双向通信 + 三层修正系统
 """
 
 from flask import Flask, render_template, request, jsonify, Response, send_file
+from flask_socketio import SocketIO, emit
 import json, time, threading, queue, os, requests, io
 from dotenv import load_dotenv
 load_dotenv()
+
 try:
     from tts_xfyun import synthesize as xfyun_tts
     XFYUN_AVAILABLE = True
@@ -26,7 +30,42 @@ try:
 except ImportError:
     ASR_AVAILABLE = False
 
+# 实时 ASR 模块
+try:
+    from asr_realtime_aliyun import RealtimeASR
+    REALTIME_ASR_AVAILABLE = True
+except ImportError:
+    REALTIME_ASR_AVAILABLE = False
+
+# 三层修正系统
+try:
+    from asr_corrections import load_hotwords, correct_interim, correct_final, correct_final_async
+    CORRECTIONS_AVAILABLE = True
+    # 启动时加载热词列表（第一层）
+    HOTWORDS = load_hotwords()
+except ImportError:
+    CORRECTIONS_AVAILABLE = False
+    HOTWORDS = []
+    def correct_interim(t): return t
+    def correct_final(t): return t
+    def correct_final_async(t, callback): callback(t)
+
 app = Flask(__name__)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'jiajun-show-secret-2024')
+
+# Flask-SocketIO 初始化，threading 模式兼容标准 Flask 开发服务器
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode="threading",
+    logger=False,
+    engineio_logger=False,
+)
+
+# ─── 实时 ASR 会话管理 ─────────────────────────────────────────────────────────
+# 每个 Socket.IO 连接（sid）对应一个 RealtimeASR 实例和一个文本累积缓冲
+_asr_sessions: dict = {}   # sid -> {"asr": RealtimeASR, "buffer": str}
+_asr_lock = threading.Lock()
 
 # Config
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "")
@@ -291,5 +330,166 @@ def asr():
     return jsonify({'error': str(last_err)}), 500
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Flask-SocketIO 事件处理 — 实时语音识别
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@socketio.on("connect")
+def on_connect():
+    """客户端连接时初始化 ASR 会话占位"""
+    sid = request.sid
+    with _asr_lock:
+        _asr_sessions[sid] = {"asr": None, "buffer": ""}
+    app.logger.info(f"[SocketIO] 客户端连接: {sid}")
+
+
+@socketio.on("disconnect")
+def on_disconnect():
+    """客户端断开时清理 ASR 实例"""
+    sid = request.sid
+    with _asr_lock:
+        session = _asr_sessions.pop(sid, None)
+    if session and session.get("asr"):
+        try:
+            session["asr"].stop()
+        except Exception:
+            pass
+    app.logger.info(f"[SocketIO] 客户端断开: {sid}")
+
+
+@socketio.on("asr_start")
+def on_asr_start(data=None):
+    """
+    浏览器发起实时识别请求。
+    服务端创建 RealtimeASR 实例并连接阿里云 NLS。
+    """
+    sid = request.sid
+
+    if not REALTIME_ASR_AVAILABLE:
+        emit("asr_error", {"msg": "实时 ASR 模块未安装"})
+        return
+
+    # 若已有实例，先停止旧的
+    with _asr_lock:
+        session = _asr_sessions.get(sid, {})
+        old_asr = session.get("asr")
+    if old_asr and old_asr.is_running:
+        try:
+            old_asr.stop()
+        except Exception:
+            pass
+
+    # 重置 buffer
+    with _asr_lock:
+        _asr_sessions[sid] = {"asr": None, "buffer": ""}
+
+    # ── 定义回调（在后台线程中运行，需要用 socketio.emit 推送到指定 sid）──────
+
+    def handle_interim(text: str):
+        """中间结果：第二层替换后立刻推回浏览器（灰色字幕）"""
+        corrected = correct_interim(text)
+        socketio.emit("asr_interim", {"text": corrected}, to=sid)
+
+    def handle_final(text: str):
+        """
+        最终结果：
+        1. 第二层替换后立刻推回（白色字幕）
+        2. 累积到 buffer
+        3. 异步发给 LLM 做第三层修正
+        """
+        corrected = correct_final(text)
+        # 推回最终结果（白色）
+        socketio.emit("asr_final", {"text": corrected}, to=sid)
+        # 累积全文
+        with _asr_lock:
+            s = _asr_sessions.get(sid, {})
+            s["buffer"] = (s.get("buffer", "") + corrected).strip()
+
+        # 第三层：LLM 异步修正
+        def on_llm_done(llm_text: str):
+            if llm_text != corrected:
+                socketio.emit("asr_llm", {"text": llm_text}, to=sid)
+
+        correct_final_async(corrected, callback=on_llm_done)
+
+    def handle_error(msg: str):
+        socketio.emit("asr_error", {"msg": msg}, to=sid)
+
+    def handle_close():
+        pass  # 关闭由 on_asr_stop 管理
+
+    # ── 创建并启动 RealtimeASR ───────────────────────────────────────────────
+    try:
+        asr = RealtimeASR(
+            on_interim=handle_interim,
+            on_final=handle_final,
+            on_error=handle_error,
+            on_close=handle_close,
+            hotwords=HOTWORDS,   # 第一层：热词
+            sample_rate=16000,
+        )
+        asr.start(timeout=10.0)
+        with _asr_lock:
+            _asr_sessions[sid] = {"asr": asr, "buffer": ""}
+        emit("asr_ready", {"status": "ok"})
+        app.logger.info(f"[SocketIO] 实时 ASR 就绪: {sid}")
+    except Exception as e:
+        app.logger.error(f"[SocketIO] 实时 ASR 启动失败: {e}")
+        emit("asr_error", {"msg": f"ASR 启动失败: {e}"})
+
+
+@socketio.on("asr_audio")
+def on_asr_audio(data):
+    """
+    浏览器发来 PCM 音频块（每 100ms 一次）。
+    data: bytes 或 dict{"audio": bytes}
+    """
+    sid = request.sid
+    with _asr_lock:
+        session = _asr_sessions.get(sid, {})
+    asr = session.get("asr") if session else None
+
+    if not asr or not asr.is_running:
+        return
+
+    # data 可能是纯 bytes，也可能是 dict
+    if isinstance(data, (bytes, bytearray)):
+        pcm = bytes(data)
+    elif isinstance(data, dict):
+        pcm = data.get("audio") or data.get("data") or b""
+        if not isinstance(pcm, (bytes, bytearray)):
+            return
+        pcm = bytes(pcm)
+    else:
+        return
+
+    if pcm:
+        asr.send_audio(pcm)
+
+
+@socketio.on("asr_stop")
+def on_asr_stop(data=None):
+    """
+    浏览器停止录音，关闭实时 ASR 会话。
+    服务端等待 NLS 返回剩余结果后关闭。
+    """
+    sid = request.sid
+    with _asr_lock:
+        session = _asr_sessions.get(sid, {})
+    asr = session.get("asr") if session else None
+
+    if asr and asr.is_running:
+        try:
+            asr.stop()
+        except Exception as e:
+            app.logger.warning(f"[SocketIO] ASR stop error: {e}")
+
+    emit("asr_stopped", {"status": "ok"})
+    app.logger.info(f"[SocketIO] 实时 ASR 已停止: {sid}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+
 if __name__ == '__main__':
-    app.run(debug=False, port=5001, host='0.0.0.0')
+    # 使用 socketio.run 代替 app.run，支持 WebSocket
+    socketio.run(app, debug=False, port=5001, host='0.0.0.0', allow_unsafe_werkzeug=True)
