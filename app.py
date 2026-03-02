@@ -112,17 +112,73 @@ history_mac = []
 history_ubuntu = []
 
 # AI backend — OpenAI-compatible (Aliyun Bailian / OpenRouter / etc.)
-# Priority: OPENAI_BASE → fallback Gemini
+# Priority: OPENCLAW_REMOTE → OPENAI_BASE → fallback Gemini
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "qwen-plus")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
+# ── OpenClaw Gateway 直连配置 ──────────────────────────────────────────────────
+# 外场模式：优先连家里真实小慕/小优实例，失败自动降级本地LLM
+OPENCLAW_MAC_URL = os.environ.get("OPENCLAW_MAC_URL", "")    # 小慕 Mac Gateway
+OPENCLAW_UBUNTU_URL = os.environ.get("OPENCLAW_UBUNTU_URL", "")  # 小优 Ubuntu Gateway
+OPENCLAW_TOKEN = os.environ.get("OPENCLAW_TOKEN", "")
+OPENCLAW_CONNECT_TIMEOUT = float(os.environ.get("OPENCLAW_CONNECT_TIMEOUT", "1.2"))
+OPENCLAW_READ_TIMEOUT = float(os.environ.get("OPENCLAW_READ_TIMEOUT", "25"))
+
+# 运行时状态：记录每个角色的当前模式（remote/local），供UI显示
+_engine_status = {"mac": "local", "ubuntu": "local"}
+
+def _try_openclaw_gateway(gateway_url: str, token: str, system_prompt: str,
+                           history: list, user_message: str) -> str | None:
+    """尝试调用家里的 OpenClaw Gateway（chatCompletions 端点）。
+    成功返回文本，失败返回 None（触发降级）。
+    超时设置：连接 1.2s + 首包 25s（LLM推理时间）。
+    """
+    messages = [{"role": "system", "content": system_prompt}]
+    for turn in history[-8:]:
+        role = "assistant" if turn["role"] == "model" else turn["role"]
+        messages.append({"role": role, "content": turn["text"]})
+    messages.append({"role": "user", "content": user_message})
+
+    try:
+        resp = requests.post(
+            f"{gateway_url.rstrip('/')}/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "x-openclaw-agent-id": "main",
+            },
+            json={"model": "openclaw", "messages": messages, "max_tokens": 200},
+            timeout=(OPENCLAW_CONNECT_TIMEOUT, OPENCLAW_READ_TIMEOUT),
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        app.logger.warning(f"OpenClaw Gateway {gateway_url} failed: {type(e).__name__}: {e}")
+        return None
+
 def get_ai_response(character_key, user_message):
     """Get response via OpenAI-compatible API (Aliyun/OpenRouter) or fallback to Gemini"""
     char = MUFFINS[character_key]
     history = history_mac if character_key == "mac" else history_ubuntu
+
+    # ── 优先：OpenClaw Gateway 直连（真实小慕/小优）──────────────────────────
+    gateway_url = OPENCLAW_MAC_URL if character_key == "mac" else OPENCLAW_UBUNTU_URL
+    if gateway_url and OPENCLAW_TOKEN:
+        text = _try_openclaw_gateway(gateway_url, OPENCLAW_TOKEN,
+                                      char["system"], history, user_message)
+        if text:
+            _engine_status[character_key] = "remote"
+            history.append({"role": "user", "text": user_message})
+            history.append({"role": "model", "text": text})
+            if len(history) > 20:
+                history[:] = history[-20:]
+            return text
+        else:
+            _engine_status[character_key] = "local"
+            app.logger.info(f"[{char['name']}] 远程Gateway不可用，已切换本地模式")
 
     # ── OpenAI-compatible path (Aliyun Bailian / OpenRouter) ──
     if OPENAI_BASE and OPENAI_API_KEY:
@@ -206,7 +262,8 @@ def send_message():
             'character': 'mac',
             'name': MUFFINS['mac']['name'],
             'text': resp,
-            'timestamp': time.time()
+            'timestamp': time.time(),
+            'engine': _engine_status.get('mac', 'local')
         })
     
     if target in ['ubuntu', 'both']:
@@ -215,10 +272,21 @@ def send_message():
             'character': 'ubuntu', 
             'name': MUFFINS['ubuntu']['name'],
             'text': resp,
-            'timestamp': time.time()
+            'timestamp': time.time(),
+            'engine': _engine_status.get('ubuntu', 'local')
         })
     
     return jsonify({'responses': responses})
+
+@app.route('/api/engine_status', methods=['GET'])
+def engine_status():
+    """返回当前小慕/小优的引擎状态（remote/local）供UI显示"""
+    return jsonify({
+        'mac': _engine_status.get('mac', 'local'),
+        'ubuntu': _engine_status.get('ubuntu', 'local'),
+        'openclaw_mac_configured': bool(OPENCLAW_MAC_URL and OPENCLAW_TOKEN),
+        'openclaw_ubuntu_configured': bool(OPENCLAW_UBUNTU_URL and OPENCLAW_TOKEN),
+    })
 
 @app.route('/api/script', methods=['POST'])
 def script_line():
