@@ -253,17 +253,11 @@ class RealtimeASR:
             "enable_inverse_text_normalization": True, # 数字规范化
         }
 
-        # 热词支持：以空格分隔的中文/英文热词字符串
-        # 阿里云 SpeechTranscriber 通过 hotword_list 字段传递内联热词
-        if self.hotwords:
-            # 过滤纯 ASCII 热词（英文），与中文热词分开处理
-            cn_words = [w for w in self.hotwords if any('\u4e00' <= c <= '\u9fff' for c in w)]
-            en_words = [w for w in self.hotwords if not any('\u4e00' <= c <= '\u9fff' for c in w)]
-            # 合并成空格分隔字符串
-            hotword_str = " ".join(cn_words + en_words)
-            if hotword_str.strip():
-                payload["hotword_list"] = hotword_str
-                logger.debug(f"[RealtimeASR] 热词: {hotword_str}")
+        # 热词支持：阿里云 NLS 不支持内联热词表，需要在控制台预建热词组
+        # 然后通过 vocabulary_id 传递。暂时跳过，后续通过控制台配置。
+        # TODO: 支持 vocabulary_id 参数
+        # if vocabulary_id:
+        #     payload["vocabulary_id"] = vocabulary_id
 
         msg = {"header": self._make_header("StartTranscription"), "payload": payload}
         self._ws.send(json.dumps(msg))
