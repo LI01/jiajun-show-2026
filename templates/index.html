@@ -329,8 +329,8 @@
   <div id="scriptButtons"></div>
 </div>
 
-<!-- Socket.IO 客户端（由 Flask-SocketIO 提供，无需外部 CDN）-->
-<script src="/socket.io/socket.io.js"></script>
+<!-- Socket.IO 客户端 v4（匹配 flask-socketio 5.x / python-socketio 5.x）-->
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 
 <script>
 const scriptGroups = [
@@ -660,7 +660,7 @@ let pcmChunks    = [];   // fallback 用：存储所有 chunks
 let useRealtime  = true; // 优先走 SocketIO 实时；失败则 fallback 到一句话 ASR
 
 // ─── Socket.IO 初始化 ────────────────────────────────────────────────────────
-// 使用 Socket.IO CDN（通过 Flask-SocketIO 的 /socket.io/socket.io.js）
+// Socket.IO v4 客户端（CDN 加载，匹配 flask-socketio 5.x）
 let socket = null;
 let socketReady = false;
 
