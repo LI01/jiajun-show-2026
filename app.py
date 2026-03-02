@@ -126,15 +126,28 @@ OPENCLAW_UBUNTU_URL = os.environ.get("OPENCLAW_UBUNTU_URL", "")  # 小优 Ubuntu
 OPENCLAW_TOKEN = os.environ.get("OPENCLAW_TOKEN", "")
 OPENCLAW_CONNECT_TIMEOUT = float(os.environ.get("OPENCLAW_CONNECT_TIMEOUT", "1.2"))
 OPENCLAW_READ_TIMEOUT = float(os.environ.get("OPENCLAW_READ_TIMEOUT", "25"))
+OPENCLAW_TOTAL_TIMEOUT = float(os.environ.get("OPENCLAW_TOTAL_TIMEOUT", "2.5"))  # 总请求兜底
 
 # 运行时状态：记录每个角色的当前模式（remote/local），供UI显示
 _engine_status = {"mac": "local", "ubuntu": "local"}
+
+# 降级提示防刷屏：记录每个角色上次弹提示的时间（30秒内不重复）
+_fallback_last_warned: dict = {}
+
+def _should_warn_fallback(character_key: str) -> bool:
+    """判断是否需要弹降级提示（30秒内同角色只弹一次）"""
+    now = time.time()
+    last = _fallback_last_warned.get(character_key, 0)
+    if now - last > 30:
+        _fallback_last_warned[character_key] = now
+        return True
+    return False
 
 def _try_openclaw_gateway(gateway_url: str, token: str, system_prompt: str,
                            history: list, user_message: str) -> str | None:
     """尝试调用家里的 OpenClaw Gateway（chatCompletions 端点）。
     成功返回文本，失败返回 None（触发降级）。
-    超时设置：连接 1.2s + 首包 25s（LLM推理时间）。
+    超时设置：连接 1.2s + 总请求 2.5s 兜底。
     """
     messages = [{"role": "system", "content": system_prompt}]
     for turn in history[-8:]:
@@ -151,7 +164,7 @@ def _try_openclaw_gateway(gateway_url: str, token: str, system_prompt: str,
                 "x-openclaw-agent-id": "main",
             },
             json={"model": "openclaw", "messages": messages, "max_tokens": 200},
-            timeout=(OPENCLAW_CONNECT_TIMEOUT, OPENCLAW_READ_TIMEOUT),
+            timeout=(OPENCLAW_CONNECT_TIMEOUT, OPENCLAW_TOTAL_TIMEOUT),  # 连接1.2s + 总2.5s
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"].strip()
@@ -177,8 +190,11 @@ def get_ai_response(character_key, user_message):
                 history[:] = history[-20:]
             return text
         else:
+            prev = _engine_status.get(character_key, "local")
             _engine_status[character_key] = "local"
-            app.logger.info(f"[{char['name']}] 远程Gateway不可用，已切换本地模式")
+            if prev == "remote" or _should_warn_fallback(character_key):
+                # 只在刚切换时或30秒内首次失败时记录（防刷屏）
+                app.logger.warning(f"[{char['name']}] 远程Gateway不可用，已切换本地模式（将在30秒内静默后续告警）")
 
     # ── OpenAI-compatible path (Aliyun Bailian / OpenRouter) ──
     if OPENAI_BASE and OPENAI_API_KEY:
@@ -257,23 +273,29 @@ def send_message():
     responses = []
     
     if target in ['mac', 'both']:
+        prev_mac = _engine_status.get('mac', 'local')
         resp = get_ai_response('mac', message)
+        engine_mac = _engine_status.get('mac', 'local')
         responses.append({
             'character': 'mac',
             'name': MUFFINS['mac']['name'],
             'text': resp,
             'timestamp': time.time(),
-            'engine': _engine_status.get('mac', 'local')
+            'engine': engine_mac,
+            'engine_changed': prev_mac != engine_mac,  # True = 刚发生切换，前端弹一次提示
         })
     
     if target in ['ubuntu', 'both']:
+        prev_ubuntu = _engine_status.get('ubuntu', 'local')
         resp = get_ai_response('ubuntu', message)
+        engine_ubuntu = _engine_status.get('ubuntu', 'local')
         responses.append({
             'character': 'ubuntu', 
             'name': MUFFINS['ubuntu']['name'],
             'text': resp,
             'timestamp': time.time(),
-            'engine': _engine_status.get('ubuntu', 'local')
+            'engine': engine_ubuntu,
+            'engine_changed': prev_ubuntu != engine_ubuntu,  # True = 刚发生切换
         })
     
     return jsonify({'responses': responses})
