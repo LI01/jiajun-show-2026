@@ -768,8 +768,8 @@ async function startMic() {
     audioCtxRec = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
     const source = audioCtxRec.createMediaStreamSource(micStream);
 
-    // bufferSize=1600 ≈ 100ms @16kHz — 控制每帧延迟
-    scriptProc = audioCtxRec.createScriptProcessor(1600, 1, 1);
+    // bufferSize=2048 ≈ 128ms @16kHz — 必须是2的幂次
+    scriptProc = audioCtxRec.createScriptProcessor(2048, 1, 1);
     pcmChunks  = [];
 
     scriptProc.onaudioprocess = (e) => {
